@@ -4,7 +4,6 @@ import Timeline from '../components/Timeline'
 import Modal from '../components/Modal'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 import * as visionService from '../services/visionService'
-import { mockZones } from '../data/mockData'
 
 export default function CctvPage() {
   const [cameras, setCameras] = useState(null)
@@ -24,6 +23,14 @@ export default function CctvPage() {
     })
     return map
   }, [detections])
+
+  const zones = useMemo(() => {
+    const seen = new Map()
+    ;(cameras || []).forEach((c) => {
+      if (!seen.has(c.zone_id)) seen.set(c.zone_id, c.zone_name)
+    })
+    return Array.from(seen, ([zone_id, zone_name]) => ({ zone_id, zone_name }))
+  }, [cameras])
 
   const filteredCameras = (cameras || []).filter(
     (c) => zoneFilter === 'all' || c.zone_id === zoneFilter,
@@ -48,7 +55,7 @@ export default function CctvPage() {
           className="focus-ring rounded-lg border border-border bg-navy-800 px-3 py-2 text-sm text-slate-200"
         >
           <option value="all">All zones</option>
-          {mockZones.map((z) => (
+          {zones.map((z) => (
             <option key={z.zone_id} value={z.zone_id}>
               {z.zone_name}
             </option>

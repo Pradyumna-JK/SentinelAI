@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import Sidebar from '../components/Sidebar'
 import ToastContainer from '../components/Toast'
-import { currentUser } from '../data/mockData'
+import * as authService from '../services/authService'
 
 const PAGE_TITLES = {
   '/dashboard': 'Dashboard',
@@ -18,7 +18,14 @@ const PAGE_TITLES = {
 export default function MainLayout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
   const pageTitle = PAGE_TITLES[location.pathname] || ''
+  const currentUser = authService.getCurrentUser()
+
+  async function handleLogout() {
+    await authService.logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <div className="flex min-h-screen bg-navy-900">
@@ -54,7 +61,12 @@ export default function MainLayout() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Navbar user={currentUser} pageTitle={pageTitle} onMenuClick={() => setMobileNavOpen(true)} />
+        <Navbar
+          user={currentUser}
+          pageTitle={pageTitle}
+          onMenuClick={() => setMobileNavOpen(true)}
+          onLogout={handleLogout}
+        />
         <main className="flex-1 p-4 sm:p-6">
           <Outlet />
         </main>

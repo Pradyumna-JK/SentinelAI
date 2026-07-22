@@ -1,0 +1,173 @@
+# SentinelAI development/production-parity stack.
+#
+#   cp .env.example .env    # fill in credentials
+#   docker compose up --build
+#
+# Required variables use ${VAR:?} interpolation so a missing .env fails
+# loudly at `up` time instead of producing half-configured containers.
+# Only the API (8000) and the MinIO console (9001) are published to the
+# host; PostgreSQL, Redis, and the S3 API stay on the internal network.
+
+name: sentinelai
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    image: sentinelai/backend:0.2.0
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SENTINEL_ENVIRONMENT: ${SENTINEL_ENVIRONMENT:-production}
+      SENTINEL_LOG_LEVEL: ${SENTINEL_LOG_LEVEL:-INFO}
+      SENTINEL_LOG_JSON: "true"
+      SENTINEL_CORS_ORIGINS: ${SENTINEL_CORS_ORIGINS:-["http://localhost:5173","http://localhost:3000"]}
+      SENTINEL_POSTGRES_HOST: postgres
+      SENTINEL_POSTGRES_PORT: "5432"
+      SENTINEL_POSTGRES_USER: ${POSTGRES_USER:?set in .env (see .env.example)}
+      SENTINEL_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env (see .env.example)}
+      SENTINEL_POSTGRES_DB: ${POSTGRES_DB:?set in .env (see .env.example)}
+      # Restricted, RLS-subject role the running app actually queries as —
+      # POSTGRES_USER above is the schema owner and stays reserved for
+      # migrations. See app/core/config.py's app_db_user docstring.
+      SENTINEL_APP_DB_USER: ${APP_DB_USER:-sentinel_app}
+      SENTINEL_APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set in .env (see .env.example)}
+      SENTINEL_AUTH_DB_USER: ${AUTH_DB_USER:-sentinel_auth}
+      SENTINEL_AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?set in .env (see .env.example)}
+      SENTINEL_REDIS_HOST: redis
+      SENTINEL_REDIS_PORT: "6379"
+      SENTINEL_REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env (see .env.example)}
+      SENTINEL_MINIO_ENDPOINT: minio:9000
+      SENTINEL_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?set in .env (see .env.example)}
+      SENTINEL_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env (see .env.example)}
+      SENTINEL_MINIO_SECURE: "false"
+      SENTINEL_MINIO_BUCKET: ${MINIO_BUCKET:-sentinel-evidence}
+      SENTINEL_JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env (see .env.example)}
+      SENTINEL_ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      SENTINEL_REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      SENTINEL_PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+      SENTINEL_DEFAULT_ORGANIZATION_NAME: ${DEFAULT_ORGANIZATION_NAME:-SentinelAI Demo}
+      SENTINEL_DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-sentinelai-demo}
+      SENTINEL_ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      SENTINEL_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SENTINEL_GEMINI_API_KEY: ${GEMINI_API_KEY:?set in .env (see .env.example) — get one at aistudio.google.com/apikey}
+      SENTINEL_GEMINI_CHAT_MODEL: ${GEMINI_CHAT_MODEL:-gemini-flash-latest}
+      SENTINEL_GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/gemini-embedding-001}
+      SENTINEL_CHROMA_HOST: chroma
+      SENTINEL_CHROMA_PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - sentinel
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env (see .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env (see .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env (see .env.example)}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sentinel
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env (see .env.example)}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a $${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sentinel
+
+  minio:
+    # Pin to a dated RELEASE.* tag for reproducible deployments.
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env (see .env.example)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env (see .env.example)}
+    ports:
+      # Host-side 9091, not 9001: port 9001 sits in a Windows/Hyper-V dynamic
+      # port-exclusion range on this machine (`netsh int ipv4 show
+      # excludedportrange protocol=tcp`), so Docker can never bind it here.
+      # Console only; the S3 API (container port 9000) stays internal.
+      - "9091:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # `mc ready` ships in current images; curl covers older ones.
+      test: ["CMD-SHELL", "mc ready local || curl -sf http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sentinel
+
+  chroma:
+    # Vector database for the Compliance Copilot (app/ai/compliance) —
+    # its own container, same reasoning as Postgres/Redis/MinIO each being
+    # separate services: the vector store's lifecycle and volume shouldn't
+    # be tied to the API container's. Internal-only, like Postgres/Redis;
+    # nothing outside this compose network needs to reach it directly.
+    # Pinned to match the `chromadb` client pin in backend/requirements.txt
+    # (>=1.5,<1.6) — client and server negotiate the API version (v2 by
+    # default in this client generation), so a mismatched major version
+    # here is a real compatibility risk, not just a version-hygiene nit.
+    image: chromadb/chroma:1.5.9
+    restart: unless-stopped
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      # No python3/curl/wget in this image (it ships a compiled `chroma`
+      # binary, not a general Python runtime) — bash's `/dev/tcp` pseudo-
+      # device sends a minimal raw HTTP request instead, no extra tooling needed.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000; printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; head -1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sentinel
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  chroma_data:
+
+networks:
+  sentinel:
+    driver: bridge

@@ -1,0 +1,20 @@
+# Build context is the repo root; only backend/ sources belong in the image.
+.git
+.github
+.claude
+frontend
+docs
+datasets
+demo
+presentation
+agents
+database
+tasks
+claude-prompts
+**/venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.env
+**/.env.*
+**/node_modules

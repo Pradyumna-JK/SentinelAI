@@ -1,0 +1,12 @@
+# Secrets — only the .example templates are committed
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

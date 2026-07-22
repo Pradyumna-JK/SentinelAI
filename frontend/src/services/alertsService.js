@@ -1,28 +1,21 @@
 import apiClient from './apiClient'
 
-// backend/app/schemas/alerts.py has no PATCH /alerts/{id}/acknowledge route
-// yet, so acknowledgements can't be persisted server-side. Track them here
-// and re-apply on every fetch so the UI still behaves correctly; this map
-// resets on page reload and is superseded once the backend adds the route.
-const acknowledgedOverrides = {}
-
-function applyOverrides(item) {
-  return {
-    ...item,
-    rationale: item.message,
-    acknowledged_by: acknowledgedOverrides[item.id] ?? item.acknowledged_by,
-  }
+// backend/app/schemas/alerts.py's field is `message`; AlertCard.jsx renders
+// `rationale` — kept as a display-only rename here rather than touching
+// that component's prop name.
+function toDisplayAlert(item) {
+  return { ...item, rationale: item.message }
 }
 
-// Mirrors GET /alerts (backend/app/routers/alerts.py)
+// Mirrors GET /alerts (backend/app/api/alerts.py)
 export async function getAlerts() {
   const { data } = await apiClient.get('/alerts')
-  return { ...data, items: data.items.map(applyOverrides) }
+  return { ...data, items: data.items.map(toDisplayAlert) }
 }
 
-// No backend route yet (see comment above) — updates the local override map
-// so the acknowledged state is reflected immediately and on subsequent fetches.
-export async function acknowledgeAlert(id, acknowledgedBy = 'You') {
-  acknowledgedOverrides[id] = acknowledgedBy
-  return { id, acknowledged_by: acknowledgedBy }
+// Mirrors POST /alerts/{id}/acknowledge — acknowledged_by is resolved
+// server-side from the caller's own auth token, not passed by the client.
+export async function acknowledgeAlert(id) {
+  const { data } = await apiClient.post(`/alerts/${id}/acknowledge`)
+  return toDisplayAlert(data)
 }

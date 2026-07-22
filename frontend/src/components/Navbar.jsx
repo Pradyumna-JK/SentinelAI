@@ -8,7 +8,8 @@ const ROLE_LABEL = {
   viewer: 'Viewer',
 }
 
-export default function Navbar({ user, pageTitle, onMenuClick }) {
+export default function Navbar({ user, pageTitle, onMenuClick, onLogout }) {
+  const displayUser = user || { full_name: 'Signed in user', role: 'Viewer' }
   return (
     <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-border bg-navy-900/95 px-4 backdrop-blur">
       <div className="flex items-center gap-3">
@@ -43,16 +44,33 @@ export default function Navbar({ user, pageTitle, onMenuClick }) {
         </span>
         <div className="flex items-center gap-2.5 rounded-lg border border-border bg-navy-800 px-2.5 py-1.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-safety-orange/15 text-xs font-semibold text-safety-orange">
-            {user.full_name
+            {displayUser.full_name
               .split(' ')
               .map((n) => n[0])
-              .join('')}
+              .join('')
+              .slice(0, 2)}
           </div>
           <div className="hidden text-left leading-tight sm:block">
-            <p className="text-xs font-medium text-slate-100">{user.full_name}</p>
-            <p className="text-[11px] text-slate-500">{ROLE_LABEL[user.role] || user.role}</p>
+            <p className="text-xs font-medium text-slate-100">{displayUser.full_name}</p>
+            <p className="text-[11px] text-slate-500">{ROLE_LABEL[displayUser.role] || displayUser.role}</p>
           </div>
         </div>
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            aria-label="Sign out"
+            className="focus-ring rounded-lg p-2 text-slate-400 hover:bg-navy-700 hover:text-slate-100"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6a3 3 0 013-3h4a3 3 0 013 3v1"
+              />
+            </svg>
+          </button>
+        )}
       </div>
     </header>
   )

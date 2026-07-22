@@ -1,7 +1,12 @@
-"""Reserved for the database engine/session layer.
+"""Non-relational infrastructure clients.
 
-No persistent store is wired up yet — every service currently operates on
-in-memory dummy data (see app/services/*.py). This package exists so the
-eventual SQLAlchemy engine/session setup (docs/07_DATABASE_DESIGN.md) has a
-home without requiring another structural reorganization when it lands.
+- ``redis``   — async Redis client (cache / pub-sub / rate limiting)
+- ``storage`` — MinIO S3-compatible object storage (evidence frames, exports)
+
+PostgreSQL lives in app/core/database.py (engine) and app/db/session.py
+(sessions), not here — this package is only for the non-SQL dependencies.
+
+Both clients are created lazily on first use so importing the app never
+requires live infrastructure (unit tests, alembic autogenerate, tooling).
+Each module exposes a ``check_*`` coroutine consumed by /health.
 """

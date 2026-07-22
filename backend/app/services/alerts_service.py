@@ -1,62 +1,77 @@
-"""Business logic for the Alerts module.
+"""Alerts: the central notification sink — see app/models/alert.py's
+module docstring for why every detection subsystem shares one table.
 
-Currently returns static dummy data. Will be backed by the `alerts` table,
-populated by the Compound Risk Engine, once implemented.
+`create_alert` is called both from the API (manual alerts, `source=manual`)
+and internally by other services (compound risk, permit agent, emergency
+orchestrator, in later phases) — it takes a plain `AsyncSession` rather
+than being bound to a request-scoped instance, so a background job can
+call it through whatever session it already has open.
 """
 
-from functools import lru_cache
+import uuid
+from datetime import datetime, timezone
 
-from app.models.enums import AlertSeverity
-from app.schemas.alerts import Alert, AlertListResponse
-from app.utils.generators import utc_now
+from fastapi import Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.models.alert import Alert
+from app.models.enums import AlertSeverity, AlertSource
+from app.models.facility import Zone
+
+
+class NotFoundError(Exception):
+    pass
+
+
+async def create_alert(
+    db: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    zone_id: uuid.UUID,
+    severity: AlertSeverity,
+    message: str,
+    source: AlertSource = AlertSource.MANUAL,
+) -> Alert:
+    alert = Alert(organization_id=organization_id, zone_id=zone_id, source=source, severity=severity, message=message)
+    db.add(alert)
+    await db.flush()
+    return alert
 
 
 class AlertsService:
-    """Provides severity-ranked alerts across monitored zones."""
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
 
-    def __init__(self) -> None:
-        self._alerts = [
-            Alert(
-                id="alert-001",
-                zone_id="zone-001",
-                zone_name="Loading Dock A",
-                severity=AlertSeverity.CRITICAL,
-                message="PPE violation detected correlated with elevated gas reading",
-                acknowledged=False,
-                acknowledged_by=None,
-                created_at=utc_now(),
-            ),
-            Alert(
-                id="alert-002",
-                zone_id="zone-002",
-                zone_name="Assembly Line 3",
-                severity=AlertSeverity.MEDIUM,
-                message="Unusual vibration pattern detected on conveyor motor",
-                acknowledged=True,
-                acknowledged_by="user-042",
-                created_at=utc_now(),
-            ),
-            Alert(
-                id="alert-003",
-                zone_id="zone-001",
-                zone_name="Loading Dock A",
-                severity=AlertSeverity.LOW,
-                message="Restricted zone intrusion - low confidence detection",
-                acknowledged=False,
-                acknowledged_by=None,
-                created_at=utc_now(),
-            ),
-        ]
+    async def list_alerts(self) -> tuple[list[Alert], dict[uuid.UUID, str]]:
+        result = await self._db.execute(
+            select(Alert, Zone.name).join(Zone, Alert.zone_id == Zone.id).order_by(Alert.created_at.desc())
+        )
+        rows = result.all()
+        alerts = [row[0] for row in rows]
+        zone_names = {row[0].zone_id: row[1] for row in rows}
+        return alerts, zone_names
 
-    def list_alerts(self) -> AlertListResponse:
-        unacknowledged = sum(1 for alert in self._alerts if not alert.acknowledged)
-        return AlertListResponse(
-            total=len(self._alerts),
-            unacknowledged_count=unacknowledged,
-            items=self._alerts,
+    async def create(
+        self, *, organization_id: uuid.UUID, zone_id: uuid.UUID, severity: AlertSeverity, message: str, source: AlertSource
+    ) -> Alert:
+        if await self._db.get(Zone, zone_id) is None:
+            raise NotFoundError()
+        return await create_alert(
+            self._db, organization_id=organization_id, zone_id=zone_id, severity=severity, message=message, source=source
         )
 
+    async def acknowledge(self, alert_id: uuid.UUID, *, acknowledged_by: uuid.UUID) -> Alert:
+        alert = await self._db.get(Alert, alert_id)
+        if alert is None:
+            raise NotFoundError()
+        alert.acknowledged = True
+        alert.acknowledged_by = acknowledged_by
+        alert.acknowledged_at = datetime.now(timezone.utc)
+        await self._db.flush()
+        return alert
 
-@lru_cache
-def get_alerts_service() -> AlertsService:
-    return AlertsService()
+
+def get_alerts_service(db: AsyncSession = Depends(get_db)) -> AlertsService:
+    return AlertsService(db)

@@ -1,5 +1,42 @@
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.32,<0.33
+# Required by FastAPI's UploadFile/File(...) form-data parsing —
+# app/api/compliance.py's PDF upload endpoint.
+python-multipart>=0.0.12,<0.1
 pydantic>=2.9,<3.0
 pydantic-settings>=2.5,<3.0
 python-dotenv>=1.0,<2.0
+sqlalchemy[asyncio]>=2.0.36,<2.1
+asyncpg>=0.30,<0.31
+alembic>=1.14,<2.0
+redis>=5.2,<6.0
+minio>=7.2,<8.0
+structlog>=24.4,<26.0
+email-validator>=2.2,<3.0
+argon2-cffi>=23.1,<24.0
+pyjwt>=2.9,<3.0
+# CPU build: this deployment (Docker Desktop, no nvidia-container-toolkit /
+# CUDA base image configured) has no usable GPU. app/ai/vision/session.py
+# already requests CUDAExecutionProvider first and reports whichever
+# provider ONNX Runtime actually selects — on a GPU host, swap this one
+# line for `onnxruntime-gpu` (same API; the two packages conflict if both
+# installed) and switch docker/Dockerfile.backend to a CUDA base image. No
+# other code changes needed.
+onnxruntime>=1.20,<2.0
+opencv-python-headless>=4.10,<5.0
+numpy>=1.26,<3.0
+# Compliance Copilot (app/ai/compliance): LangGraph orchestrates
+# classify-intent -> retrieve; LangChain supplies the chat/embedding
+# clients, text splitting, and message types; chromadb is the vector
+# store's client (talks to the `chroma` docker-compose service over
+# HTTP, not embedded in-process — pin matches the server image tag in
+# docker-compose.yml so client/server speak the same API version);
+# pypdf extracts text for chunking. Gemini (not OpenAI) is the LLM
+# provider — free tier, see app/ai/llm_content.py for the content-shape
+# normalization this requires.
+langgraph>=1.2,<1.3
+langchain-core>=1.5,<1.6
+langchain-google-genai>=4.3,<4.4
+langchain-text-splitters>=1.1,<1.2
+chromadb>=1.5,<1.6
+pypdf>=6.0,<7.0

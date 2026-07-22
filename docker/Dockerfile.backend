@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build: stage 1 compiles the dependency virtualenv, stage 2 is a
+# minimal runtime that never contains pip caches, build tools, or source
+# history. Build context is the repository root; paths are backend/-relative.
+
+# --- Stage 1: builder -------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
+
+# --- Stage 2: runtime -------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+LABEL org.opencontainers.image.title="SentinelAI Backend" \
+      org.opencontainers.image.source="https://github.com/Pradyumna-JK/SentinelAI"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# libgl1/libglib2.0-0: opencv-python-headless still dynamically links
+# against these even without display/GUI support (cv2.imdecode et al.
+# otherwise fail with "libGL.so.1: cannot open shared object file").
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root runtime user with a fixed UID (plays well with k8s runAsUser and
+# volume ownership).
+RUN groupadd --gid 10001 sentinel \
+    && useradd --uid 10001 --gid sentinel --create-home sentinel
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=sentinel:sentinel backend/app ./app
+COPY --chown=sentinel:sentinel backend/alembic ./alembic
+COPY --chown=sentinel:sentinel backend/alembic.ini ./alembic.ini
+# ONNX weight files (app/ai/vision/registry.py's MODEL_SPECS) — missing
+# files degrade that capability at startup rather than failing the build.
+COPY --chown=sentinel:sentinel backend/models ./models
+
+USER sentinel
+
+EXPOSE 8000
+
+# Liveness only — dependency health is the orchestrator's readiness concern,
+# probed via GET /health. Uses stdlib so no curl/wget needed in the image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).status == 200 else 1)"]
+
+# Apply migrations, then hand PID 1 to uvicorn (exec → correct SIGTERM
+# handling). Access logging is disabled: RequestLoggingMiddleware emits the
+# structured equivalent.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log"]

@@ -12,10 +12,13 @@ export default function CompliancePage() {
   const [messages, setMessages] = useState([])
   const [isAnswering, setIsAnswering] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [sessionId, setSessionId] = useState(null)
   const { showToast } = useToast()
 
+  const refreshDocuments = () => complianceService.getDocuments().then((res) => setDocuments(res.items))
+
   useEffect(() => {
-    complianceService.getDocuments().then((res) => setDocuments(res.items))
+    refreshDocuments()
     complianceService.getChatHistory().then((res) => setMessages(res.items))
   }, [])
 
@@ -23,21 +26,38 @@ export default function CompliancePage() {
     const userMsg = { id: `u-${Date.now()}`, role: 'user', text: question, citations: [] }
     setMessages((prev) => [...prev, userMsg])
     setIsAnswering(true)
-    const res = await complianceService.askQuestion(question)
-    setIsAnswering(false)
-    const answerText = res.insufficient_info
-      ? "I don't have enough ingested documentation to answer that confidently yet."
-      : res.answer
-    setMessages((prev) => [
-      ...prev,
-      { id: `a-${Date.now()}`, role: 'assistant', text: answerText, citations: res.citations },
-    ])
+    try {
+      const res = await complianceService.askQuestion(question, sessionId)
+      setSessionId(res.session_id)
+      const answerText = res.insufficient_info
+        ? "I don't have enough ingested documentation to answer that confidently yet."
+        : res.answer
+      setMessages((prev) => [
+        ...prev,
+        { id: `a-${Date.now()}`, role: 'assistant', text: answerText, citations: res.citations },
+      ])
+    } catch (err) {
+      showToast(err.message || 'Compliance chat failed', 'error')
+    } finally {
+      setIsAnswering(false)
+    }
   }
 
-  const handleUpload = (e) => {
+  const handleUpload = async (e) => {
     e.preventDefault()
-    setUploadOpen(false)
-    showToast('Document queued for ingestion (placeholder)', 'success')
+    const file = e.target.elements['doc-file'].files[0]
+    if (!file) {
+      showToast('Choose a PDF file first', 'error')
+      return
+    }
+    try {
+      await complianceService.uploadDocument(file)
+      setUploadOpen(false)
+      showToast('Document queued for ingestion — refresh in a few seconds for status', 'success')
+      await refreshDocuments()
+    } catch (err) {
+      showToast(err.message || 'Upload failed', 'error')
+    }
   }
 
   return (
@@ -70,8 +90,12 @@ export default function CompliancePage() {
               <ul className="space-y-2.5">
                 {documents.map((doc) => (
                   <li key={doc.id} className="rounded-lg border border-border bg-navy-900/60 p-2.5">
-                    <p className="text-sm text-slate-200">{doc.title}</p>
-                    <p className="text-xs text-slate-500">v{doc.version} · {doc.uploaded_by}</p>
+                    <p className="text-sm text-slate-200">{doc.filename}</p>
+                    <p className="text-xs text-slate-500">
+                      {doc.status}
+                      {doc.status === 'ready' && ` · ${doc.chunk_count} chunks`}
+                      {doc.status === 'failed' && doc.error_message ? ` · ${doc.error_message}` : ''}
+                    </p>
                   </li>
                 ))}
               </ul>
@@ -87,24 +111,13 @@ export default function CompliancePage() {
       <Modal isOpen={uploadOpen} onClose={() => setUploadOpen(false)} title="Upload Compliance Document">
         <form onSubmit={handleUpload} className="space-y-4">
           <div>
-            <label htmlFor="doc-title" className="mb-1 block text-xs font-medium text-slate-400">
-              Title
-            </label>
-            <input
-              id="doc-title"
-              type="text"
-              required
-              placeholder="e.g. OSHA 1910.146 - Confined Spaces"
-              className="focus-ring w-full rounded-lg border border-border bg-navy-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-            />
-          </div>
-          <div>
             <label htmlFor="doc-file" className="mb-1 block text-xs font-medium text-slate-400">
-              File
+              PDF file
             </label>
             <input
               id="doc-file"
               type="file"
+              accept="application/pdf"
               className="w-full text-sm text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-navy-700 file:px-3 file:py-1.5 file:text-slate-200"
             />
           </div>

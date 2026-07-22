@@ -1,61 +1,68 @@
-"""Business logic for the Camera / CCTV Monitoring module.
+"""Camera registry: real FK'd to a zone, replacing the earlier dummy list.
 
-Currently returns static dummy data. Will be backed by the camera registry
-and the Vision Intelligence Agent's live stream metadata once implemented.
+Live stream health/frame delivery is the Vision Intelligence Engine's
+concern (app/ai/vision) — this service owns only the registry (what
+cameras exist, which zone they monitor, their declared status), matching
+the same "persistence vs. live processing" split as Compliance's document
+registry vs. its ingestion worker.
 """
 
-from functools import lru_cache
+import uuid
 
-from app.models.enums import CameraStatus
-from app.schemas.camera import CameraListResponse, CameraStream
+from fastapi import Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.models.camera import Camera
+from app.models.facility import Zone
+
+
+class NotFoundError(Exception):
+    pass
 
 
 class CameraService:
-    """Provides registered CCTV camera stream metadata."""
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
 
-    def __init__(self) -> None:
-        self._streams = [
-            CameraStream(
-                camera_id="cam-001",
-                name="Dock A - North",
-                zone_id="zone-001",
-                zone_name="Loading Dock A",
-                stream_url="https://cdn.sentinelai.demo/hls/cam1.m3u8",
-                status=CameraStatus.ACTIVE,
-                resolution="1920x1080",
-                fps=24,
-            ),
-            CameraStream(
-                camera_id="cam-002",
-                name="Assembly Line 3 - Overview",
-                zone_id="zone-002",
-                zone_name="Assembly Line 3",
-                stream_url="https://cdn.sentinelai.demo/hls/cam2.m3u8",
-                status=CameraStatus.ACTIVE,
-                resolution="1280x720",
-                fps=30,
-            ),
-            CameraStream(
-                camera_id="cam-003",
-                name="Chemical Storage - Entrance",
-                zone_id="zone-003",
-                zone_name="Chemical Storage",
-                stream_url="https://cdn.sentinelai.demo/hls/cam3.m3u8",
-                status=CameraStatus.MAINTENANCE,
-                resolution="1920x1080",
-                fps=0,
-            ),
-        ]
-
-    def list_streams(self) -> CameraListResponse:
-        active_count = sum(1 for stream in self._streams if stream.status == CameraStatus.ACTIVE)
-        return CameraListResponse(
-            total_cameras=len(self._streams),
-            active_cameras=active_count,
-            streams=self._streams,
+    async def list_streams(self) -> tuple[list[Camera], dict[uuid.UUID, str]]:
+        result = await self._db.execute(
+            select(Camera, Zone.name).join(Zone, Camera.zone_id == Zone.id).order_by(Camera.name)
         )
+        rows = result.all()
+        cameras = [row[0] for row in rows]
+        zone_names = {row[0].zone_id: row[1] for row in rows}
+        return cameras, zone_names
+
+    async def create(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        zone_id: uuid.UUID,
+        name: str,
+        stream_url: str,
+        resolution: str | None,
+        fps: int | None,
+        layout_x: float | None,
+        layout_y: float | None,
+    ) -> Camera:
+        if await self._db.get(Zone, zone_id) is None:
+            raise NotFoundError()
+        camera = Camera(
+            organization_id=organization_id,
+            zone_id=zone_id,
+            name=name,
+            stream_url=stream_url,
+            resolution=resolution,
+            fps=fps,
+            layout_x=layout_x,
+            layout_y=layout_y,
+        )
+        self._db.add(camera)
+        await self._db.flush()
+        return camera
 
 
-@lru_cache
-def get_camera_service() -> CameraService:
-    return CameraService()
+def get_camera_service(db: AsyncSession = Depends(get_db)) -> CameraService:
+    return CameraService(db)
